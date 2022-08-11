@@ -5,6 +5,7 @@ import (
 	"duel-masters/game/cards/dm02"
 	"duel-masters/game/cards/dm03"
 	"duel-masters/game/cards/dm04"
+	"duel-masters/game/cards/dm05"
 	"duel-masters/game/match"
 )
 
@@ -14,6 +15,7 @@ var Sets = map[string]*map[string]match.CardConstructor{
 	"dm-02": &DM02,
 	"dm-03": &DM03,
 	"dm-04": &DM04,
+	"dm-05": &DM05,
 }
 
 // DM01 is a map with all the card id's in the game and corresponding CardConstructor for dm01
@@ -330,4 +332,20 @@ var DM04 = map[string]match.CardConstructor{
 	"ebb2a7f2-ea2d-427f-8dca-0a650553736d": dm04.SariusVizierOfSuppression,
 	"afa724a7-6a5e-425d-984c-b1a977b0c7f8": dm04.ScreamingSunburst,
 	"d48b24ad-2b6c-4a00-affc-f95be66976fc": dm04.WhiskingWhirlwind,
+}
+
+var DM05 = map[string]match.CardConstructor{
+	"1fe34153-7cd0-40e9-bbcf-96dd7074860c": dm05.TwinCannonSkyterror,
+	"82e062b1-bf9d-444e-9cd3-2fdef007ba64": dm05.BolgashDragon,
+	"15456751-98e0-4cbf-b2e9-649427bcf8ae": dm05.LaGuileSeekerOfSkyfire,
+	"a8189c59-1f1b-498d-a289-113ce02ab631": dm05.SeaSlug,
+	"ab743952-7857-490a-b6d6-6ecd9f0d68c8": dm05.RikabuTheDismantler,
+	"d98448c3-fd04-452b-a338-c9674c69e96f": dm05.CannoneerBargon,
+	"dac08511-6c9a-44cf-b328-237acb678305": dm05.BombatGeneralOfSpeed,
+	"f78a43be-b874-4a05-b681-48647fde9e48": dm05.BillionDegreeDragon,
+	"3e6d2002-39f0-4be9-bad0-1738a299731f": dm05.BallusDogfightEnforcerQ,
+	"3e63d487-a25c-405d-8c04-df8c5e414fd6": dm05.SplitHeadHydroturtleQ,
+	"4ac7c097-cdc3-42e8-9203-1a481274f9d2": dm05.BladerushSkyterrorQ,
+	"5ad88bc8-5991-46d9-a98a-19c7569a4f05": dm05.RuthlessSkyterror,
+	"5f5a3a3f-3675-4e5d-8bd6-0c76cb8c4ce4": dm05.DeathCruzerTheAnnihilator,
 }

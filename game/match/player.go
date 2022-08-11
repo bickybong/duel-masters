@@ -27,7 +27,17 @@ const (
 // PlayerReference ties a player to a websocket connection
 type PlayerReference struct {
 	UID      string
+	Username string
+	Color    string
 	Player   *Player
+	Socket   *server.Socket
+	LastPong int64
+}
+
+type Spectator struct {
+	UID      string
+	Username string
+	Color    string
 	Socket   *server.Socket
 	LastPong int64
 }
@@ -38,11 +48,20 @@ type PlayerAction struct {
 	Cancel bool     `json:"cancel"`
 }
 
+// PlayerActionState is used to store the last sent action message to the client.
+// When a player reconnects, if the last action is still active, we send it to the player
+type PlayerActionState struct {
+	resolved bool
+	data     interface{}
+}
+
 // NewPlayerReference returns a new player reference
 func NewPlayerReference(p *Player, s *server.Socket) *PlayerReference {
 
 	pr := &PlayerReference{
 		UID:      s.User.UID,
+		Username: s.User.Username,
+		Color:    s.User.Color,
 		Player:   p,
 		Socket:   s,
 		LastPong: time.Now().Unix(),
@@ -65,7 +84,8 @@ type Player struct {
 
 	mutex *sync.Mutex
 
-	Action chan PlayerAction
+	ActionState PlayerActionState
+	Action      chan PlayerAction
 
 	HasChargedMana bool
 	CanChargeMana  bool
@@ -88,6 +108,7 @@ func NewPlayer(match *Match, turn byte) *Player {
 		spellzone:      make([]*Card, 0),
 		hiddenzone:     make([]*Card, 0),
 		mutex:          &sync.Mutex{},
+		ActionState:    PlayerActionState{resolved: true},
 		Action:         make(chan PlayerAction),
 		HasChargedMana: false,
 		CanChargeMana:  true,
@@ -280,6 +301,11 @@ func (p *Player) DrawCards(n int) {
 		p.match.Chat("Server", fmt.Sprintf("%s drew %v cards", p.match.PlayerRef(p).Socket.User.Username, n))
 	} else {
 		p.match.Chat("Server", fmt.Sprintf("%s drew %v card", p.match.PlayerRef(p).Socket.User.Username, n))
+	}
+
+	if len(p.deck) <= 0 {
+		// deck out
+		p.match.End(p.match.Opponent(p), fmt.Sprintf("%s won by deck out!", p.match.Opponent(p).Username()))
 	}
 
 }

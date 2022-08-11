@@ -2,13 +2,24 @@
   <div>
     <div
       v-show="
-        wait || previewCard || previewCards || errorMessage || warning || action || opponentDisconnected || reconnecting
+        wait ||
+          previewCard ||
+          previewCards ||
+          errorMessage ||
+          warning ||
+          action ||
+          opponentDisconnected ||
+          reconnecting
       "
+      @click="handleOverlayClick()"
       class="overlay"
     ></div>
 
     <div v-if="opponentDisconnected && !errorMessage" class="error">
-      <p>Your opponent disconnected or left the match. Waiting for them to reconnect{{ loadingDots }}</p>
+      <p>
+        Your opponent disconnected or left the match. Waiting for them to
+        reconnect{{ loadingDots }}
+      </p>
       <div @click="redirect('overview')" class="btn">Leave duel</div>
     </div>
 
@@ -38,26 +49,19 @@
       <div @click="dismissLarge()" class="btn">Close</div>
     </div>
 
-    <div v-if="previewCards" class="cards-preview">
+    <div v-if="previewCards" class="cards-preview" @click="dismissLarge()">
       <h1>{{ previewCardsText }}</h1>
       <img
         @contextmenu.prevent="
-          previewCards = null;
-          previewCardsText = null;
-          previewCard = card;
+          dismissLarge();
+          showLarge(card);
         "
         v-for="(card, index) in previewCards"
         :key="index"
         :src="`/assets/cards/all/${card.uid}.jpg`"
       />
       <br /><br />
-      <div
-        @click="
-          previewCards = null;
-          previewCardsText = null;
-        "
-        class="btn"
-      >
+      <div @click="dismissLarge()" class="btn">
         Close
       </div>
     </div>
@@ -65,6 +69,7 @@
     <!-- action (card selection) -->
     <div v-if="action" id="action" class="action noselect">
       <span v-draggable data-ref="action">{{ action.text }}</span>
+      <span><i> Tip: click and drag to (de)select faster</i></span>
       <template v-if="actionObject">
         <select class="action-select" v-model="actionDrowdownSelection">
           <option
@@ -78,8 +83,11 @@
       <div v-if="!actionObject" class="action-cards">
         <div v-for="(card, index) in action.cards" :key="index" class="card">
           <img
-            @click="actionSelect(card)"
+            @dragstart.prevent=""
+            @mouseenter="actionSelectMouseEnter($event, card)"
+            @mousedown="actionSelect(card)"
             :class="[
+              'no-drag',
               actionSelects.includes(card) ? 'glow-' + card.civilization : ''
             ]"
             :src="`/assets/cards/all/${card.uid}.jpg`"
@@ -93,8 +101,11 @@
           class="card"
         >
           <img
-            @click="actionSelect(card)"
+            @dragstart.prevent=""
+            @mouseenter="actionSelectMouseEnter($event, card)"
+            @mousedown="actionSelect(card)"
             :class="[
+              'no-drag',
               actionSelects.includes(card) ? 'glow-' + card.civilization : ''
             ]"
             :src="`/assets/cards/all/${card.uid}.jpg`"
@@ -134,12 +145,40 @@
 
     <!-- Match -->
     <div class="chat">
-      <div class="chatbox">
+      <div :class="state.spectator ? 'fullsize-chatbox' : 'chatbox'">
         <div class="messages">
           <div id="messages" class="messages-helper">
-            <div class="message" :style="{'background': message.sender.toLowerCase() === 'server' ? 'none' : '#202124'}" v-for="(message, index) in chatMessages" :key="index">
-              <div class="message-sender" :style="{'color': message.color || 'orange'}">{{ message.sender.toLowerCase() == "server" ? "-" : (message.sender + ":")}} </div>
+            <div
+              class="message"
+              :style="{
+                background:
+                  message.sender.toLowerCase() === 'server' ? 'none' : '#202124'
+              }"
+              v-for="(message, index) in chatMessages.filter(
+                m => !settings.muted.includes(m.sender)
+              )"
+              :key="index"
+            >
+              <div
+                class="message-sender"
+                :style="{ color: message.color || 'orange' }"
+              >
+                {{
+                  message.sender.toLowerCase() == "server"
+                    ? "-"
+                    : message.sender + ":"
+                }}
+              </div>
               <div class="message-text">{{ message.message }}</div>
+              <div class="mute-icon-container">
+                <MuteIcon
+                  v-if="
+                    !['server', username].includes(message.sender.toLowerCase())
+                  "
+                  :player="message.sender"
+                  @toggled="onSettingsChanged()"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -148,7 +187,7 @@
         </form>
       </div>
 
-      <div class="actionbox handaction">
+      <div v-if="!state.spectator" class="actionbox handaction">
         <template v-if="handSelection">
           <span>{{ handSelection.name }}</span>
           <div
@@ -173,7 +212,7 @@
         </template>
       </div>
 
-      <div class="actionbox">
+      <div v-if="!state.spectator" class="actionbox">
         <div
           @click="endTurn()"
           :class="['btn', 'block', { disabled: !state.myTurn }]"
@@ -243,20 +282,34 @@
           </div>
         </div>
 
-        <div class="shieldzone">
+        <div
+          class="shieldzone"
+          @drop.prevent="drop($event, 'opponentshieldzone')"
+          @dragover.prevent
+          @dragenter.prevent
+          ref="opponentshieldzone"
+        >
           <div class="card shield placeholder">
             <img src="/assets/cards/backside.png" />
           </div>
           <div
             v-for="(card, index) in state.opponent.shieldzone"
             :key="index"
-            class="card shield flipped"
+            :class="
+              'card shield' + (!settings.noUpsideDownCards ? ' flipped' : '')
+            "
           >
             <img src="/assets/cards/backside.png" />
           </div>
         </div>
 
-        <div class="playzone">
+        <div
+          class="playzone"
+          @drop.prevent="drop($event, 'opponentsplayzone')"
+          @dragover.prevent
+          @dragenter.prevent
+          ref="opponentsplayzone"
+        >
           <div class="card placeholder">
             <img src="/assets/cards/backside.png" />
           </div>
@@ -266,7 +319,10 @@
             :key="index"
             :class="['card', { tapped: card.tapped }]"
           >
-            <img class="flipped" :src="`/assets/cards/all/${card.uid}.jpg`" />
+            <img
+              :class="!settings.noUpsideDownCards ? 'flipped' : ''"
+              :src="`/assets/cards/all/${card.uid}.jpg`"
+            />
           </div>
         </div>
       </div>
@@ -285,7 +341,9 @@
             <img
               @contextmenu.prevent="
                 previewCards = state.opponent.graveyard;
-                previewCardsText = 'Opponent\'s Graveyard';
+                previewCardsText =
+                  (state.spectator ? state.opponent.username : 'Opponent') +
+                  '\'s Graveyard';
               "
               v-if="state.opponent.graveyard.length > 0"
               style="height: 10vh"
@@ -306,6 +364,7 @@
 
       <div class="right-stage bt">
         <div class="right-stage-content">
+          <p v-if="state.spectator">Hand [{{ state.me.handCount }}]</p>
           <p>Graveyard [{{ state.me.graveyard.length }}]</p>
           <div class="card">
             <img
@@ -317,7 +376,9 @@
             <img
               @contextmenu.prevent="
                 previewCards = state.me.graveyard;
-                previewCardsText = 'My Graveyard';
+                previewCardsText =
+                  (state.spectator ? state.me.username + '\'s' : 'My') +
+                  ' Graveyard';
               "
               v-if="state.me.graveyard.length > 0"
               style="height: 10vh"
@@ -337,7 +398,13 @@
       </div>
 
       <div class="stage me bt">
-        <div @drop='drop($event, "playzone")' @dragover.prevent @dragenter.prevent ref="myplayzone" class="playzone">
+        <div
+          @drop.prevent="drop($event, 'playzone')"
+          @dragover.prevent
+          @dragenter.prevent
+          ref="myplayzone"
+          class="playzone"
+        >
           <div class="card placeholder">
             <img src="/assets/cards/backside.png" />
           </div>
@@ -349,6 +416,9 @@
             :class="['card', { tapped: card.tapped }]"
           >
             <img
+              draggable
+              @dragstart="startDrag($event, card, 'playzone')"
+              @dragend="stopDrag('playzone')"
               :class="
                 playzoneSelection === card ? 'glow-' + card.civilization : ''
               "
@@ -370,7 +440,13 @@
           </div>
         </div>
 
-        <div @drop='drop($event, "manazone")' @dragover.prevent @dragenter.prevent ref="mymanazone" class="manazone">
+        <div
+          @drop.prevent="drop($event, 'manazone')"
+          @dragover.prevent
+          @dragenter.prevent
+          ref="mymanazone"
+          class="manazone"
+        >
           <div class="card mana placeholder">
             <img src="/assets/cards/backside.png" />
           </div>
@@ -380,12 +456,27 @@
             :key="index"
             :class="['card', 'mana', { tapped: card.tapped }]"
           >
-            <img class="flipped" :src="`/assets/cards/all/${card.uid}.jpg`" />
+            <img
+              :class="!settings.noUpsideDownCards ? 'flipped' : ''"
+              :src="`/assets/cards/all/${card.uid}.jpg`"
+            />
           </div>
         </div>
       </div>
 
       <div class="hand bt">
+        <div class="spectator-info" v-if="state.spectator">
+          <div>You are spectating</div>
+          <Username :color="state.me.color">{{ state.me.username }}</Username>
+          <div>vs</div>
+          <Username :color="state.opponent.color">{{
+            state.opponent.username
+          }}</Username>
+        </div>
+        <div class="spectator-leave" v-if="state.spectator">
+          <span @click="$router.push('/overview')">Stop spectating</span>
+        </div>
+
         <div class="card placeholder">
           <img src="/assets/cards/backside.png" />
         </div>
@@ -398,8 +489,8 @@
         >
           <img
             draggable
-            @dragstart='startDrag($event, card)'
-            @dragend="stopDrag($event, card)"
+            @dragstart="startDrag($event, card, 'hand')"
+            @dragend="stopDrag('hand')"
             :class="[handSelection === card ? 'glow-' + card.civilization : '']"
             :src="`/assets/cards/all/${card.uid}.jpg`"
           />
@@ -410,29 +501,31 @@
 </template>
 
 <script>
-import config from "../config";
 import ClipboardJS from "clipboard";
-import { call, ws_protocol } from "../remote";
+import { call, ws_protocol, host } from "../remote";
 import CardShowDialog from "../components/dialogs/CardShowDialog";
+import Username from "../components/Username.vue";
+import MuteIcon from "../components/MuteIcon.vue";
+import { getSettings, didSeeMuteWarning } from "../helpers/settings";
 
 const send = (client, message) => {
   client.send(JSON.stringify(message));
 };
 
 function sound(src) {
-    this.sound = document.createElement("audio");
-    this.sound.src = src;
-    this.sound.setAttribute("preload", "auto");
-    this.sound.setAttribute("controls", "none");
-    this.sound.style.display = "none";
-    this.sound.volume = 0.3;
-    document.body.appendChild(this.sound);
-    this.play = function() {
-        this.sound.play();
-    };
-    this.stop = function() {
-        this.sound.pause();
-    };
+  this.sound = document.createElement("audio");
+  this.sound.src = src;
+  this.sound.setAttribute("preload", "auto");
+  this.sound.setAttribute("controls", "none");
+  this.sound.style.display = "none";
+  this.sound.volume = 0.3;
+  document.body.appendChild(this.sound);
+  this.play = function() {
+    this.sound.play();
+  };
+  this.stop = function() {
+    this.sound.pause();
+  };
 }
 
 let turnSound = new sound("/assets/turn.mp3");
@@ -440,6 +533,10 @@ let playerJoinedSound = new sound("/assets/player_joined.mp3");
 
 export default {
   name: "game",
+  components: {
+    Username,
+    MuteIcon
+  },
   data() {
     return {
       ws: null,
@@ -452,11 +549,7 @@ export default {
 
       loadingDots: "",
       invite:
-        location.protocol +
-        "//" +
-        location.host +
-        "/invite/" +
-        this.$route.params.id,
+        location.protocol + "//" + host + "/invite/" + this.$route.params.id,
       inviteCopied: false,
       inviteCopyTask: null,
 
@@ -483,8 +576,12 @@ export default {
 
       previewCard: null,
       previewCards: null,
-      previewCardsText: null
+      previewCardsText: null,
+      settings: getSettings()
     };
+  },
+  computed: {
+    username: () => localStorage.getItem("username")
   },
   methods: {
     redirect(to) {
@@ -497,6 +594,7 @@ export default {
       this.chatMessage = "";
       this.ws.send(JSON.stringify({ header: "chat", message }));
     },
+
     chat(sender, color, message) {
       this.chatMessages.push({ sender, color, message });
       this.$nextTick(() => {
@@ -505,9 +603,24 @@ export default {
       });
     },
 
+    onSettingsChanged(e) {
+      if (!e && !didSeeMuteWarning()) {
+        this.warning =
+          "You can unmute players at any time from the settings page";
+      }
+
+      this.settings = getSettings();
+    },
+
     chooseDeck(uid) {
       this.deck = uid;
       this.ws.send(JSON.stringify({ header: "choose_deck", uid }));
+    },
+
+    handleOverlayClick() {
+      if (this.previewCard || this.previewCards) {
+        this.dismissLarge();
+      }
     },
 
     makeHandSelection(card) {
@@ -533,6 +646,14 @@ export default {
       }
 
       this.actionSelects.push(card);
+    },
+
+    actionSelectMouseEnter(event, card) {
+      const isLeftClick = event.buttons === 1;
+
+      if (isLeftClick) {
+        this.actionSelect(card);
+      }
     },
 
     cancelAction() {
@@ -590,6 +711,8 @@ export default {
 
     dismissLarge() {
       this.previewCard = null;
+      this.previewCards = null;
+      this.previewCardsText = null;
     },
 
     onPlayzoneClicked(card) {
@@ -629,62 +752,90 @@ export default {
         })
       );
     },
-    startDrag(evt, card) {
+    startDrag(evt, card, source) {
       evt.dataTransfer.dropEffect = "move";
       evt.dataTransfer.effectAllowed = "move";
       evt.dataTransfer.setData("vid", card.virtualId);
 
-      if(card.canBePlayed) {
-        this.$refs.myplayzone.style.backgroundColor = "#507053";
-      } else {
-        this.$refs.myplayzone.style.backgroundColor = "#7d5252";
+      const greenHighlight = "#507053";
+      const redHighlight = "#7d5252";
+
+      if (source === "hand") {
+        if (card.canBePlayed) {
+          this.$refs.myplayzone.style.backgroundColor = greenHighlight;
+        } else {
+          this.$refs.myplayzone.style.backgroundColor = redHighlight;
+        }
+
+        if (!this.state.hasAddedManaThisRound) {
+          this.$refs.mymanazone.style.backgroundColor = greenHighlight;
+        } else {
+          this.$refs.mymanazone.style.backgroundColor = redHighlight;
+        }
+      } else if (source === "playzone") {
+        if (this.state.opponent.playzone.length) {
+          this.$refs.opponentsplayzone.style.backgroundColor = greenHighlight;
+        } else {
+          this.$refs.opponentsplayzone.style.backgroundColor = redHighlight;
+        }
+
+        this.$refs.opponentshieldzone.style.backgroundColor = greenHighlight;
       }
-      
-      if(!this.state.hasAddedManaThisRound) {
-        this.$refs.mymanazone.style.backgroundColor = "#507053";
-      } else {
-        this.$refs.mymanazone.style.backgroundColor = "#7d5252";
-      }
-      
     },
-    stopDrag() {
-      this.$refs.myplayzone.style.backgroundColor = "transparent";
-      this.$refs.mymanazone.style.backgroundColor = "transparent";
+    stopDrag(source) {
+      if (source === "hand") {
+        this.$refs.myplayzone.style.backgroundColor = "transparent";
+        this.$refs.mymanazone.style.backgroundColor = "transparent";
+      } else if (source === "playzone") {
+        this.$refs.opponentsplayzone.style.backgroundColor = "transparent";
+        this.$refs.opponentshieldzone.style.backgroundColor = "transparent";
+      }
     },
     drop(event, zone) {
       const vid = event.dataTransfer.getData("vid");
-      const card = this.state.me.hand.find(x => x.virtualId === vid);
 
-      console.log(vid, card);
+      if (["manazone", "playzone"].includes(zone)) {
+        this.handSelection = this.state.me.hand.find(x => x.virtualId === vid);
 
-      this.handSelection = card;
-      
-      if(zone == "manazone") {
-        this.addToManazone();
-      } else if(zone == "playzone") {
-        this.addToPlayzone();
+        if (zone === "manazone") {
+          this.addToManazone();
+        } else if (zone === "playzone") {
+          this.addToPlayzone();
+        }
+      }
+
+      if (["opponentshieldzone", "opponentsplayzone"].includes(zone)) {
+        this.playzoneSelection = this.state.me.playzone.find(
+          x => x.virtualId === vid
+        );
+
+        if (zone === "opponentshieldzone") {
+          this.attackPlayer();
+        } else if (zone === "opponentsplayzone") {
+          this.attackCreature();
+        }
       }
     }
   },
-  created() {  
+  created() {
+    addEventListener("storage", this.onSettingsChanged);
 
     let lastReconnect = 0;
 
     const connect = async () => {
-
-      if(this.errorMessage.includes("won")) {
+      if (this.errorMessage.includes("won")) {
         return;
       }
 
-      if(this.preventReconnect) {
+      if (this.preventReconnect) {
         return;
       }
 
-      if(lastReconnect > 0) {
+      if (lastReconnect > 0) {
         console.log("Attempting to reconnect..");
       }
-      
-      if(lastReconnect > Date.now() - 5000) {
+
+      if (lastReconnect > Date.now() - 5000) {
         setTimeout(connect, 1000);
         return;
       }
@@ -695,8 +846,8 @@ export default {
           path: `/match/${this.$route.params.id}`,
           method: "GET"
         });
-      } catch(err) {
-        if(err.response && err.response.status == 404) {
+      } catch (err) {
+        if (err.response && err.response.status == 404) {
           this.errorMessage = "This duel has been closed";
         }
       }
@@ -705,7 +856,7 @@ export default {
 
       // Connect to the server
       const ws = new WebSocket(
-        ws_protocol + window.location.host + "/ws/" + this.$route.params.id
+        ws_protocol + host + "/ws/" + this.$route.params.id
       );
       this.ws = ws;
 
@@ -737,7 +888,7 @@ export default {
 
           case "hello": {
             send(ws, {
-                header: "join_match"
+              header: "join_match"
             });
             break;
           }
@@ -787,7 +938,7 @@ export default {
             this.handSelection = null;
             this.playzoneSelection = null;
 
-            if(this.state.myTurn !== data.state.myTurn) {
+            if (this.state.myTurn !== data.state.myTurn) {
               turnSound.play();
               console.log("turn change");
             }
@@ -859,7 +1010,6 @@ export default {
           }
         }
       };
-
     };
 
     connect();
@@ -882,6 +1032,8 @@ export default {
     });
   },
   beforeDestroy() {
+    removeEventListener("storage", this.onSettingsChanged);
+
     this.preventReconnect = true;
     this.ws.close();
   }
@@ -889,6 +1041,31 @@ export default {
 </script>
 
 <style scoped lang="scss">
+.spectator-info {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+  margin-top: 7vh;
+  div {
+    margin: 0 3px;
+  }
+}
+
+.spectator-leave {
+  color: #999;
+  text-align: center;
+  margin-top: 10px;
+  margin-bottom: 7vh;
+  text-decoration: underline;
+  color: #777;
+  span {
+    &:hover {
+      cursor: pointer;
+    }
+  }
+}
+
 .card-preview {
   width: 300px;
   text-align: center;
@@ -962,6 +1139,15 @@ export default {
     overflow: auto;
     img {
       height: 125px;
+
+      &.no-drag {
+        user-drag: none;
+        -webkit-user-drag: none;
+        user-select: none;
+        -moz-user-select: none;
+        -webkit-user-select: none;
+        -ms-user-select: none;
+      }
     }
     .card {
       margin: 0 7px;
@@ -1053,6 +1239,13 @@ export default {
   border-radius: 4px;
 }
 
+.fullsize-chatbox {
+  height: calc(100vh - 15px);
+  background: #2f3136;
+  margin: 5px;
+  border-radius: 4px;
+}
+
 .handaction {
   height: 53px !important;
   span {
@@ -1108,10 +1301,21 @@ export default {
 }
 
 .message {
-   display: flex;
-   margin-top: 5px;
-   border-radius: 3px;
-   padding: 3px;
+  display: flex;
+  margin-top: 5px;
+  border-radius: 3px;
+  padding: 3px 6px;
+  line-height: 26px;
+
+  .mute-icon-container {
+    display: flex;
+    align-items: center;
+    opacity: 0;
+  }
+
+  &:hover .mute-icon-container {
+    opacity: 1;
+  }
 }
 
 .message-sender {
@@ -1143,6 +1347,22 @@ export default {
 }
 
 .chatbox input {
+  border: none;
+  border-radius: 4px;
+  margin: 10px;
+  width: calc(100% - 40px);
+  background: #484c52;
+  padding: 10px;
+  color: #ccc;
+  &:focus {
+    outline: none;
+  }
+  &:active {
+    outline: none;
+  }
+}
+
+.fullsize-chatbox input {
   border: none;
   border-radius: 4px;
   margin: 10px;
@@ -1408,11 +1628,11 @@ export default {
 
 .noselect {
   -webkit-touch-callout: none; /* iOS Safari */
-    -webkit-user-select: none; /* Safari */
-     -khtml-user-select: none; /* Konqueror HTML */
-       -moz-user-select: none; /* Old versions of Firefox */
-        -ms-user-select: none; /* Internet Explorer/Edge */
-            user-select: none; /* Non-prefixed version, currently
+  -webkit-user-select: none; /* Safari */
+  -khtml-user-select: none; /* Konqueror HTML */
+  -moz-user-select: none; /* Old versions of Firefox */
+  -ms-user-select: none; /* Internet Explorer/Edge */
+  user-select: none; /* Non-prefixed version, currently
                                   supported by Chrome, Edge, Opera and Firefox */
 }
 </style>

@@ -1,10 +1,19 @@
 <template>
   <div>
-    <div v-show="errorMessage || wizardVisible" class="overlay"></div>
+    <div
+      v-show="errorMessage || wizardVisible || warning"
+      @click="closeOverlay()"
+      class="overlay"
+    ></div>
 
     <div v-show="errorMessage" class="error">
       <p>{{ errorMessage }}</p>
       <div @click="refreshPage()" class="btn">Reconnect</div>
+    </div>
+
+    <div v-show="warning" class="error">
+      <p>{{ warning }}</p>
+      <div @click="warning = ''" class="btn">Ok</div>
     </div>
 
     <div v-show="wizardVisible" class="new-duel">
@@ -12,7 +21,7 @@
         <div class="spacer">
           <span class="headline">Create a new duel</span>
           <br /><br />
-          <form>
+          <form @submit="handleSubmit()" v-on:submit.prevent="onSubmit">
             <input v-model="wizard.name" type="text" placeholder="Name" />
             <br /><br />
             <span class="helper">Visibility</span>
@@ -82,10 +91,33 @@
           </div>
 
           <div class="chatbox">
+            <div v-if="pinnedMessages.length" class="pinned-messages">
+              <div v-for="(msg, i) in pinnedMessages" :key="i">
+                {{ msg.message }}
+                <span v-if="msg.timeString">{{ msg.timeString }}</span>
+              </div>
+            </div>
             <div id="messages" class="messages spaced">
               <div class="messages-helper">
-                <div v-for="(msg, i) in chatMessages" :key="i">
-                  <Username :color="msg.color">{{ msg.username }}</Username>
+                <div
+                  v-for="(msg, i) in chatMessages.filter(
+                    m => !settings.muted.includes(m.username)
+                  )"
+                  :key="i"
+                >
+                  <Username
+                    :color="msg.color"
+                    :muteUser="
+                      ['[Server]', username].includes(msg.username)
+                        ? null
+                        : msg.username
+                    "
+                    @muteToggled="onSettingsChanged()"
+                    >{{ msg.username }}
+                    <span class="message-ts"
+                      >{{ tsformat(msg.timestamp) }} ago
+                    </span>
+                  </Username>
                   <div class="user-messages">
                     <div v-for="(message, j) in msg.messages" :key="j">
                       <span>{{ message }}</span>
@@ -114,7 +146,13 @@
             </tr>
             <tr v-for="(match, index) in matches" :key="index">
               <td>
-                <Username :color="match.color">{{ match.owner }}</Username>
+                <div class="match-players">
+                  <Username :color="match.p1color">{{ match.p1 }}</Username>
+                  <div v-show="match.p2">vs</div>
+                  <Username v-show="match.p2" :color="match.p2color">{{
+                    match.p2
+                  }}</Username>
+                </div>
               </td>
               <td>{{ match.name }}</td>
               <td>
@@ -134,9 +172,17 @@
 </template>
 
 <script>
-import { call, ws_protocol } from "../remote";
+import { call, ws_protocol, host } from "../remote";
 import Header from "../components/Header.vue";
 import Username from "../components/Username.vue";
+import { getSettings, didSeeMuteWarning } from "../helpers/settings";
+import {
+  format,
+  fromUnixTime,
+  formatDistanceToNowStrict,
+  isBefore,
+  formatDistance
+} from "date-fns";
 
 const send = (client, message) => {
   client.send(JSON.stringify(message));
@@ -163,14 +209,28 @@ export default {
       },
       chatMessage: "",
       chatMessages: [],
+      pinnedMessages: [], // { message, time }
       users: [],
       matches: [],
       errorMessage: "",
+      warning: "",
       wsLoading: true,
-      loadingDots: "."
+      loadingDots: ".",
+      settings: getSettings()
     };
   },
   methods: {
+    onSettingsChanged(e) {
+      if (!e && !didSeeMuteWarning()) {
+        this.warning =
+          "You can unmute players at any time from the settings page";
+      }
+
+      this.settings = getSettings();
+    },
+    tsformat(ts) {
+      return formatDistance(Date.now(), fromUnixTime(ts));
+    },
     refreshPage() {
       location.reload();
     },
@@ -183,9 +243,16 @@ export default {
       };
       this.wizardVisible = !this.wizardVisible;
     },
+    closeOverlay() {
+      this.toggleWizard();
+      this.errorMessage = "";
+    },
+    handleSubmit() {
+      this.createDuel();
+    },
     async createDuel() {
-      if (this.wizard.name.length < 5 || this.wizard.length > 30) {
-        this.wizardError = "Duel name must be between 5-30 characters";
+      if (this.wizard.length > 30) {
+        this.wizardError = "Duel name cannot exceed 30 characters";
         return;
       }
 
@@ -246,6 +313,7 @@ export default {
     }
   },
   created() {
+    addEventListener("storage", this.onSettingsChanged);
 
     document.title = document.title.replace("🔴", "");
 
@@ -255,11 +323,22 @@ export default {
       else this.loadingDots += ".";
     }, 500);
 
+    let timeUpdates = setInterval(() => {
+      for (let msg of this.pinnedMessages) {
+        if (!msg.time) continue;
+
+        if (isBefore(fromUnixTime(msg.time), Date.now())) {
+          clearInterval(timeUpdates);
+          return;
+        }
+
+        msg.timeString = formatDistanceToNowStrict(fromUnixTime(msg.time));
+      }
+    }, 500);
+
     // Connect to the server
     try {
-      const ws = new WebSocket(
-        ws_protocol + window.location.host + "/ws/lobby"
-      );
+      const ws = new WebSocket(ws_protocol + host + "/ws/lobby");
       this.ws = ws;
 
       ws.onopen = () => {
@@ -297,6 +376,25 @@ export default {
             for (let message of data.messages) {
               this.chat(message);
             }
+            break;
+          }
+
+          case "pinned_messages": {
+            this.pinnedMessages = [];
+
+            for (let message of data.messages) {
+              if (message.includes("time:")) {
+                let time = message.split("time:")[1];
+                this.pinnedMessages.push({
+                  message: message.split("time:")[0],
+                  time,
+                  timeString: formatDistanceToNowStrict(fromUnixTime(time))
+                });
+              } else {
+                this.pinnedMessages.push({ message });
+              }
+            }
+
             break;
           }
 
@@ -352,12 +450,20 @@ export default {
     }
   },
   beforeDestroy() {
+    removeEventListener("storage", this.onSettingsChanged);
     this.ws.close();
   }
 };
 </script>
 
 <style scoped lang="scss">
+.match-players {
+  display: flex;
+  div {
+    margin: 0 3px;
+  }
+}
+
 .disabled {
   background: #7289da !important;
   opacity: 0.5;
@@ -602,7 +708,7 @@ main {
 }
 
 .user-category {
-  margin-bottom: 10px;
+  margin-bottom: 16px;
   border-bottom: 1px solid #555;
   color: #777;
   padding-bottom: 5px;
@@ -613,7 +719,6 @@ main {
 .chatbox {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
   height: 100%;
   overflow: hidden;
 }
@@ -632,6 +737,10 @@ main {
   &:active {
     outline: none;
   }
+}
+
+.chatbox form {
+  justify-self: end;
 }
 
 .duels .btn {
@@ -661,6 +770,11 @@ main {
   overflow: auto;
   margin-bottom: 0;
   padding-bottom: 0;
+  flex-grow: 1;
+
+  &-helper {
+    margin-right: 10px;
+  }
 }
 
 *::-webkit-scrollbar-track {
@@ -735,5 +849,19 @@ main {
 .new-duel-btn:hover {
   cursor: pointer;
   background: #35966a;
+}
+
+.pinned-messages {
+  background: #202124;
+  padding: 10px;
+  font-size: 13px;
+  color: yellow;
+}
+
+.message-ts {
+  font-size: 11px;
+  color: #999;
+  text-shadow: none;
+  opacity: 0.5;
 }
 </style>

@@ -1,58 +1,73 @@
 package game
 
 import (
+	"context"
+	"duel-masters/db"
 	"duel-masters/game/match"
+	"duel-masters/internal"
 	"duel-masters/server"
 	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 const (
 	messageBufferSize int = 100
 )
 
-var messages = append(make([]server.LobbyChatMessage, 0), server.LobbyChatMessage{
-	Username:  "[Server]",
-	Color:     "#777",
-	Message:   fmt.Sprintf("Last server restart: %v. Have fun!", time.Now().Local().UTC().Format("Mon Jan 2 15:04:05 -0700 MST")),
-	Timestamp: int(time.Now().Unix()),
-})
-var messagesMutex = &sync.Mutex{}
+// Lobby struct is used to create a Hub that can parse messages from the websocket server
+type Lobby struct {
+	pinnedMessages []string
+	messages       []server.LobbyChatMessage
+	messagesMutex  *sync.Mutex
 
-var subscribers = make([]*server.Socket, 0)
-var subscribersMutex = &sync.Mutex{}
+	subscribers internal.ConcurrentDictionary[server.Socket]
 
-var userCache server.UserListMessage = server.GetUserList()
-var matchCache server.MatchesListMessage = server.MatchesListMessage{
-	Header:  "matches",
-	Matches: make([]server.MatchMessage, 0),
+	userCache server.UserListMessage
+
+	matches func() []*match.Match
 }
 
-var lobby = &Lobby{}
+func NewLobby() *Lobby {
+	return &Lobby{
+		pinnedMessages: []string{},
+		messages: append(make([]server.LobbyChatMessage, 0), server.LobbyChatMessage{
+			Username:  "[Server]",
+			Color:     "#777",
+			Message:   fmt.Sprintf("Last server restart: %v. Have fun!", time.Now().Local().UTC().Format("Mon Jan 2 15:04:05 -0700 MST")),
+			Timestamp: int(time.Now().Unix()),
+		}),
+		messagesMutex: &sync.Mutex{},
 
-// Lobby struct is used to create a Hub that can parse messages from the websocket server
-type Lobby struct{}
+		subscribers: internal.NewConcurrentDictionary[server.Socket](),
+
+		userCache: server.GetUserList(),
+
+		matches: func() []*match.Match { return []*match.Match{} },
+	}
+}
 
 // Name just returns "lobby", obligatory for a hub
 func (l *Lobby) Name() string {
 	return "lobby"
 }
 
-// GetLobby returns a reference to the lobby
-func GetLobby() *Lobby {
-	return lobby
+func (l *Lobby) SetMatchesFunc(f func() []*match.Match) {
+	l.matches = f
 }
 
 // Broadcast sends a message to all subscribed sockets
-func Broadcast(msg interface{}) {
-	subscribersMutex.Lock()
-	defer subscribersMutex.Unlock()
-
-	for _, subscriber := range subscribers {
+func (l *Lobby) Broadcast(msg interface{}) {
+	for _, subscriber := range l.subscribers.Iter() {
 		go subscriber.Send(msg)
 	}
 }
@@ -67,18 +82,18 @@ func (l *Lobby) StartTicker() {
 	defer func() {
 		if r := recover(); r != nil {
 			logrus.Errorf("Recovered from lobby ticker. %v", r)
+			debug.PrintStack()
 		}
 	}()
-
-	go ListenForMatchListUpdates()
 
 	for {
 
 		select {
 		case <-ticker.C:
 			{
-				UpdateUserCache()
-				Broadcast(userCache)
+				l.UpdateUserCache()
+				l.Broadcast(l.userCache)
+				l.UpdatePinnedMessages()
 			}
 		}
 
@@ -86,23 +101,27 @@ func (l *Lobby) StartTicker() {
 }
 
 // UpdateUserCache updates the list of users online
-func UpdateUserCache() {
-	userCache = server.GetUserList()
+func (l *Lobby) UpdateUserCache() {
+	l.userCache = server.GetUserList()
 }
 
-// ListenForMatchListUpdates broadcasts changes to the open matches to all lobby subscribers
-func ListenForMatchListUpdates() {
+func (l *Lobby) UpdatePinnedMessages() {
 
-	for {
+	l.messagesMutex.Lock()
+	defer l.messagesMutex.Unlock()
 
-		update := <-match.LobbyMatchList()
+	l.Broadcast(server.PinnedMessages{
+		Header:   "pinned_messages",
+		Messages: l.pinnedMessages,
+	})
 
-		matchCache = update
+}
 
-		Broadcast(update)
+func (l *Lobby) PinMessage(message string) {
+	l.messagesMutex.Lock()
+	defer l.messagesMutex.Unlock()
 
-	}
-
+	l.pinnedMessages = append(l.pinnedMessages, message)
 }
 
 // Parse websocket messages
@@ -111,6 +130,7 @@ func (l *Lobby) Parse(s *server.Socket, data []byte) {
 	defer func() {
 		if r := recover(); r != nil {
 			logrus.Warnf("Recovered from parsing a message in lobby. %v", r)
+			debug.PrintStack()
 		}
 	}()
 
@@ -123,30 +143,46 @@ func (l *Lobby) Parse(s *server.Socket, data []byte) {
 
 	case "subscribe":
 		{
-			subscribersMutex.Lock()
-			defer subscribersMutex.Unlock()
-
-			for _, subscriber := range subscribers {
+			for _, subscriber := range l.subscribers.Iter() {
 				if subscriber == s {
 					return
 				}
 			}
 
-			subscribers = append(subscribers, s)
+			_, ok := l.subscribers.Find(s.UID)
 
-			// Send chat messages
-			s.Send(server.LobbyChatMessages{
+			if ok {
+				return
+			}
+
+			l.subscribers.Add(s.UID, s)
+
+			messages := server.LobbyChatMessages{
 				Header:   "chat",
-				Messages: messages,
+				Messages: []server.LobbyChatMessage{},
+			}
+
+			for _, msg := range l.messages {
+				if msg.Removed && msg.Username != s.User.Username {
+					continue
+				}
+
+				messages.Messages = append(messages.Messages, msg)
+			}
+
+			s.Send(messages)
+
+			s.Send(server.PinnedMessages{
+				Header:   "pinned_messages",
+				Messages: l.pinnedMessages,
 			})
 
 			// Update and send user list
-			UpdateUserCache()
-			s.Send(userCache)
+			l.UpdateUserCache()
+			s.Send(l.userCache)
 
 			// Send match list
-
-			s.Send(matchCache)
+			l.Broadcast(match.MatchList(l.matches()))
 
 		}
 
@@ -167,15 +203,15 @@ func (l *Lobby) Parse(s *server.Socket, data []byte) {
 
 			runes := []rune(msg.Message)
 			if string(runes[0:1]) == "/" {
-				handleChatCommand(s, msg.Message)
+				l.handleChatCommand(s, msg.Message)
 				return
 			}
 
-			messagesMutex.Lock()
-			defer messagesMutex.Unlock()
+			l.messagesMutex.Lock()
+			defer l.messagesMutex.Unlock()
 
-			if len(messages) >= messageBufferSize {
-				_, messages = messages[0], messages[1:]
+			if len(l.messages) >= messageBufferSize {
+				_, l.messages = l.messages[0], l.messages[1:]
 			}
 
 			chatMsg := server.LobbyChatMessage{
@@ -183,6 +219,7 @@ func (l *Lobby) Parse(s *server.Socket, data []byte) {
 				Color:     s.User.Color,
 				Message:   msg.Message,
 				Timestamp: int(time.Now().Unix()),
+				Removed:   s.User.Chatblocked,
 			}
 
 			toBroadcast := server.LobbyChatMessages{
@@ -190,9 +227,13 @@ func (l *Lobby) Parse(s *server.Socket, data []byte) {
 				Messages: []server.LobbyChatMessage{chatMsg},
 			}
 
-			messages = append(messages, chatMsg)
+			l.messages = append(l.messages, chatMsg)
 
-			Broadcast(toBroadcast)
+			if chatMsg.Removed {
+				s.Send(toBroadcast)
+			} else {
+				l.Broadcast(toBroadcast)
+			}
 
 		}
 
@@ -214,7 +255,19 @@ func chat(s *server.Socket, message string) {
 	})
 }
 
-func handleChatCommand(s *server.Socket, command string) {
+func (l *Lobby) handleChatCommand(s *server.Socket, command string) {
+
+	defer func() {
+		if r := recover(); r != nil {
+			chat(s, "An error occured while parsing your command")
+		}
+	}()
+
+	if !strings.HasPrefix(command, "/") {
+		return
+	}
+
+	parts := strings.Split(command, " ")
 
 	hasRights := false
 
@@ -229,12 +282,11 @@ func handleChatCommand(s *server.Socket, command string) {
 		return
 	}
 
-	switch command {
-	case "/sockets":
+	switch strings.ToLower(strings.TrimPrefix(parts[0], "/")) {
+	case "sockets":
 		{
 			message := ""
-			sockets := server.Sockets()
-			for _, s := range sockets {
+			for _, s := range server.Sockets.Iter() {
 				if s.Ready() {
 					if message != "" {
 						message += ", "
@@ -245,18 +297,170 @@ func handleChatCommand(s *server.Socket, command string) {
 			chat(s, "Sockets: "+message)
 		}
 
-	case "/matches":
+	case "matches":
 		{
 			message := ""
-			matches := match.Matches()
-			for _, m := range matches {
+			for _, m := range l.matches() {
 				if message != "" {
 					message += ", "
 				}
 
-				message += m
+				message += m.ID
 			}
 			chat(s, "Matches: "+message)
+		}
+
+	case "shutdown":
+		{
+			logrus.Info("Shutdown command invoked")
+			os.Exit(0)
+		}
+
+	case "chatblock":
+		{
+			if len(parts) < 2 {
+				chat(s, "Missing command arguments")
+				return
+			}
+
+			var user db.User
+
+			if err := db.Collection("users").FindOne(context.Background(), bson.M{"username": primitive.Regex{Pattern: "^" + parts[1] + "$", Options: "i"}}).Decode(&user); err != nil {
+				chat(s, fmt.Sprintf("Could not find the user \"%s\"", parts[1]))
+				return
+			}
+
+			_, err := db.Collection("users").UpdateOne(
+				context.Background(),
+				bson.M{"uid": user.UID},
+				bson.M{"$set": bson.M{"chat_blocked": true}},
+			)
+
+			if err != nil {
+				chat(s, fmt.Sprintf("Failed to chatblock %s", user.Username))
+			}
+
+			l.messagesMutex.Lock()
+			defer l.messagesMutex.Unlock()
+
+			for i, msg := range l.messages {
+				if msg.Username == user.Username {
+					l.messages[i].Removed = true
+				}
+			}
+
+			blockedSocket, ok := server.FindByUserUID(user.UID)
+
+			if ok {
+				blockedSocket.User.Chatblocked = true
+			}
+
+			chat(s, fmt.Sprintf("Successfully chatblocked %s", user.Username))
+		}
+
+	case "ban":
+		{
+			if len(parts) < 2 {
+				chat(s, "Missing command arguments")
+				return
+			}
+
+			var user db.User
+
+			if err := db.Collection("users").FindOne(context.Background(), bson.M{"username": primitive.Regex{Pattern: "^" + parts[1] + "$", Options: "i"}}).Decode(&user); err != nil {
+				chat(s, fmt.Sprintf("Could not find the user \"%s\"", parts[1]))
+				return
+			}
+
+			banEntry := db.Ban{
+				Type:  db.UserBan,
+				Value: user.UID,
+			}
+
+			db.Collection("bans").InsertOne(context.Background(), banEntry)
+
+			// clear banned user sessions
+			db.Collection("users").UpdateOne(
+				context.Background(),
+				bson.M{"uid": user.UID},
+				bson.M{"$set": bson.M{"sessions": []db.UserSession{}}},
+			)
+
+			// disconnect the banned user if online
+			bannedSocket, ok := server.FindByUserUID(user.UID)
+
+			if ok {
+				bannedSocket.Close()
+			}
+
+			chat(s, fmt.Sprintf("Successfully banned %s (%s)", user.Username, user.UID))
+		}
+
+	case "ipban":
+		{
+			if len(parts) < 2 {
+				chat(s, "Missing command arguments")
+				return
+			}
+
+			var user db.User
+
+			if err := db.Collection("users").FindOne(context.Background(), bson.M{"username": primitive.Regex{Pattern: "^" + parts[1] + "$", Options: "i"}}).Decode(&user); err != nil {
+				chat(s, fmt.Sprintf("Could not find the user \"%s\"", parts[1]))
+				return
+			}
+
+			banEntries := []interface{}{}
+
+			banEntries = append(banEntries, db.Ban{
+				Type:  db.UserBan,
+				Value: user.UID,
+			})
+
+			if user.Sessions != nil && len(user.Sessions) > 0 {
+				banEntries = append(banEntries, db.Ban{
+					Type:  db.IPBan,
+					Value: user.Sessions[len(user.Sessions)-1].IP,
+				})
+			}
+
+			db.Collection("bans").InsertMany(context.Background(), banEntries)
+
+			// clear banned user sessions
+			db.Collection("users").UpdateOne(
+				context.Background(),
+				bson.M{"uid": user.UID},
+				bson.M{"$set": bson.M{"sessions": []db.UserSession{}}},
+			)
+
+			// disconnect the banned user if online
+			bannedSocket, ok := server.FindByUserUID(user.UID)
+
+			if ok {
+				bannedSocket.Close()
+			}
+
+			if len(banEntries) > 1 {
+				chat(s, fmt.Sprintf("Successfully banned %s (%s), and their IP", user.Username, user.UID))
+			} else {
+				chat(s, fmt.Sprintf("Successfully banned %s (%s), but did not find an IP to ban", user.Username, user.UID))
+			}
+
+		}
+
+	case "malloc":
+		{
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			chat(s, fmt.Sprintf("Current = %v bytes", (m.Alloc)))
+			chat(s, fmt.Sprintf("\tAll time = %v bytes", (m.TotalAlloc)))
+			chat(s, fmt.Sprintf("\tReserved = %v bytes", (m.Sys)))
+			chat(s, fmt.Sprintf("\tNumGC = %v\n", m.NumGC))
+		}
+
+	default:
+		{
+			chat(s, fmt.Sprintf("%s is not a valid command", command))
 		}
 	}
 
@@ -264,20 +468,5 @@ func handleChatCommand(s *server.Socket, command string) {
 
 // OnSocketClose is called when a socket disconnects
 func (l *Lobby) OnSocketClose(s *server.Socket) {
-
-	subscribersMutex.Lock()
-	defer subscribersMutex.Unlock()
-
-	subscribersUpdate := make([]*server.Socket, 0)
-
-	for _, subscriber := range subscribers {
-
-		if subscriber != s {
-			subscribersUpdate = append(subscribersUpdate, subscriber)
-		}
-
-	}
-
-	subscribers = subscribersUpdate
-
+	l.subscribers.Remove(s.UID)
 }

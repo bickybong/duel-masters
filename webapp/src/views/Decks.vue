@@ -1,6 +1,10 @@
 <template>
   <div>
-    <div v-show="warning || previewCard" class="overlay"></div>
+    <div
+      v-show="warning || previewCard"
+      @click="closeOverlay()"
+      class="overlay"
+    ></div>
 
     <div v-if="previewCard" class="card-preview">
       <img :src="`/assets/cards/all/${previewCard.uid}.jpg`" />
@@ -13,7 +17,7 @@
     </div>
 
     <div v-if="showWizard" class="new-duel">
-      <div class="backdrop"></div>
+      <div class="backdrop" @click="showWizard = false"></div>
       <div class="wizard">
         <div class="spacer">
           <span class="headline">Edit your deck</span>
@@ -44,7 +48,14 @@
           <table>
             <tr>
               <th>
-                Card Name
+                <div class="sort-btn" @click="toggleSort('name')">
+                  Card Name
+                  <img
+                    class="sort-ico"
+                    width="25px"
+                    :src="`/assets/images/${sortIcons.name}.png`"
+                  />
+                </div>
                 <input
                   v-model="filterCardName"
                   type="search"
@@ -52,7 +63,14 @@
                 />
               </th>
               <th>
-                Set
+                <div class="sort-btn" @click="toggleSort('set')">
+                  Set
+                  <img
+                    class="sort-ico"
+                    width="25px"
+                    :src="`/assets/images/${sortIcons.set}.png`"
+                  />
+                </div>
                 <select v-model="filterSet">
                   <option
                     class="set"
@@ -64,7 +82,14 @@
                 </select>
               </th>
               <th>
-                Civilization
+                <div class="sort-btn" @click="toggleSort('civilization')">
+                  Civilization
+                  <img
+                    class="sort-ico"
+                    width="25px"
+                    :src="`/assets/images/${sortIcons.civilization}.png`"
+                  />
+                </div>
                 <select v-model="filterCivilization">
                   <option value="all">All</option>
                   <option value="fire">Fire</option>
@@ -72,6 +97,25 @@
                   <option value="nature">Nature</option>
                   <option value="light">Light</option>
                   <option value="darkness">Darkness</option>
+                </select>
+              </th>
+              <th>
+                <div class="sort-btn" @click="toggleSort('family')">
+                  Race
+                  <img
+                    class="sort-ico"
+                    width="25px"
+                    :src="`/assets/images/${sortIcons.family}.png`"
+                  />
+                </div>
+                <select v-model="filterFamily">
+                  <option
+                    class="family"
+                    v-for="(family, index) in families"
+                    :key="index"
+                    :value="family"
+                    >{{ family }}</option
+                  >
                 </select>
               </th>
             </tr>
@@ -82,13 +126,14 @@
                 selectedFromDeck = card;
                 selected = card;
               "
-              v-for="(card, index) in filteredCards"
+              v-for="(card, index) in filteredAndSortedCards"
               :key="index"
               :class="[{ selected: selected && selected.uid === card.uid }]"
             >
               <td>{{ card.name }}</td>
               <td class="set">{{ card.set }}</td>
               <td class="civilization">{{ card.civilization }}</td>
+              <td class="family">{{ card.family || "Spell" }}</td>
             </tr>
           </table>
         </div>
@@ -123,11 +168,27 @@
           src="/assets/images/edit_icon.png"
         />
         <div class="right-btns">
-          <a :href="'/deck/' + selectedDeckUid" v-if="selectedDeck && selectedDeck.public" target="_blank">
-            <img class="fl edit-ico share" width="25px" src="/assets/images/share_icon.png"/>
+          <a
+            :href="'/deck/' + selectedDeckUid"
+            v-if="selectedDeck && selectedDeck.public"
+            target="_blank"
+          >
+            <img
+              class="fl edit-ico share"
+              width="25px"
+              src="/assets/images/share_icon.png"
+            />
           </a>
-          <a v-if="selectedDeck && selectedDeck.uid" @click="deleteDeck(selectedDeckUid)" target="_blank">
-            <img class="fl edit-ico share" width="25px" src="/assets/images/delete_icon.png"/>
+          <a
+            v-if="selectedDeck && selectedDeck.uid"
+            @click="deleteDeck(selectedDeckUid)"
+            target="_blank"
+          >
+            <img
+              class="fl edit-ico share"
+              width="25px"
+              src="/assets/images/delete_icon.png"
+            />
           </a>
           <div @click="newDeck()" class="btn new">New Deck</div>
           <template
@@ -140,7 +201,7 @@
           </template>
         </div>
 
-        <div class="right-content bg">
+        <div v-if="selectedDeck" class="right-content bg">
           <div class="cards-table">
             <table>
               <tr>
@@ -148,6 +209,7 @@
                 <th>Card Name</th>
                 <th>Set</th>
                 <th>Civilization</th>
+                <th>Race</th>
               </tr>
               <template v-if="selectedDeck">
                 <tr
@@ -170,6 +232,7 @@
                   <td>{{ card.name }}</td>
                   <td class="set">{{ card.set }}</td>
                   <td class="civilization">{{ card.civilization }}</td>
+                  <td class="civilization">{{ card.family }}</td>
                 </tr>
               </template>
             </table>
@@ -208,7 +271,13 @@ export default {
 
       filterCardName: "",
       filterCivilization: "all",
+      filterFamily: "All",
       filterSet: "All",
+      families: ["All", "Spell"],
+      sort: {
+        by: "name",
+        directionNum: 1
+      },
 
       sets: [],
       cards: [],
@@ -232,6 +301,13 @@ export default {
     cardInfo(uid) {
       let card = this.cards.find(x => x.uid === uid);
       return card;
+    },
+
+    toggleSort(by) {
+      this.sort = {
+        directionNum: this.sort.by === by ? -this.sort.directionNum : 1,
+        by
+      };
     },
 
     getCardsForDeck(cardUids) {
@@ -307,6 +383,11 @@ export default {
       });
     },
 
+    closeOverlay() {
+      this.previewCard = null;
+      this.warning = null;
+    },
+
     async save() {
       try {
         let res = await call({
@@ -326,11 +407,11 @@ export default {
       try {
         let res = await call({
           path: "/deck/" + this.selectedDeckUid,
-          method: "DELETE",
+          method: "DELETE"
         });
 
         this.decks = this.decks.filter(x => x.uid !== this.selectedDeckUid);
-        if(this.decks.length > 0) {
+        if (this.decks.length > 0) {
           this.selectedDeckUid = this.decks[0].uid;
           this.selectDeck(this.decks[0]);
         } else {
@@ -339,8 +420,7 @@ export default {
 
         this.warning = "Successfully deleted your deck";
       } catch (e) {
-        this.warning =
-          "Couldn't delete the deck you selected";
+        this.warning = "Couldn't delete the deck you selected";
       }
     },
 
@@ -401,6 +481,16 @@ export default {
           public: false
         });
       }
+
+      let families = [];
+      for (let c of this.cards) {
+        if (c.family && !families.includes(c.family)) {
+          families.push(c.family);
+        }
+      }
+      families.sort();
+      this.families.push(...families);
+
       this.selectedDeck = this.decks[0];
       this.deckCopy = JSON.parse(JSON.stringify(this.selectedDeck));
       this.selectedDeckUid = this.selectedDeck.uid;
@@ -421,30 +511,56 @@ export default {
     }
   },
   computed: {
-    filteredCards() {
-      let filteredCards = this.cards.filter(card =>
+    filteredAndSortedCards() {
+      let cards = this.cards.filter(card =>
         card.name.toLowerCase().includes(this.filterCardName.toLowerCase())
       );
 
       if (this.filterSet !== "All") {
-        filteredCards = filteredCards.filter(
-          card => card.set === this.filterSet
-        );
+        cards = cards.filter(card => card.set === this.filterSet);
       }
 
       if (this.filterCivilization !== "all") {
-        filteredCards = filteredCards.filter(
+        cards = cards.filter(
           card => card.civilization === this.filterCivilization
         );
       }
 
-      return filteredCards;
+      if (this.filterFamily.toLowerCase() !== "all") {
+        cards = cards.filter(
+          card =>
+            (this.filterFamily.toLowerCase() === "spell" && !card.family) ||
+            card.family === this.filterFamily
+        );
+      }
+
+      cards.sort(
+        (c1, c2) =>
+          this.sort.directionNum *
+          c1[this.sort.by].localeCompare(c2[this.sort.by])
+      );
+
+      return cards;
+    },
+
+    sortIcons() {
+      const result = {
+        name: "arrow_up_down",
+        set: "arrow_up_down",
+        civilization: "arrow_up_down",
+        family: "arrow_up_down"
+      };
+
+      result[this.sort.by] =
+        this.sort.directionNum === 1 ? "arrow_down" : "arrow_up";
+
+      return result;
     }
   }
 };
 </script>
 
-<style scoped>
+<style scoped lang="scss">
 .helper {
   display: block !important;
   margin-bottom: 5px;
@@ -598,6 +714,15 @@ select {
   color: #ccc;
   resize: none;
 }
+
+th {
+  input,
+  select {
+    margin: 0;
+    width: 100% !important;
+  }
+}
+
 input:focus,
 textarea:focus,
 select:focus {
@@ -862,6 +987,23 @@ a {
   color: #7289da;
 }
 
+.sort-btn {
+  white-space: nowrap;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+
+  .sort-ico {
+    margin-left: 5px;
+    filter: invert(70%);
+
+    &:hover {
+      filter: invert(80%);
+      cursor: pointer;
+    }
+  }
+}
+
 .btn {
   display: inline-block;
   background: #7289da;
@@ -886,6 +1028,9 @@ a {
 
 .set {
   text-transform: uppercase;
+}
+
+.family {
 }
 
 .civilization {

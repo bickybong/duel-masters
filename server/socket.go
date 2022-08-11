@@ -5,9 +5,12 @@ import (
 	"time"
 
 	"duel-masters/db"
+	"duel-masters/internal"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
+	"github.com/ventu-io/go-shortid"
 )
 
 const (
@@ -17,22 +20,11 @@ const (
 	maxMessageSize = 512
 )
 
-var sockets = make(map[*Socket]Hub)
-var socketsMutex = sync.Mutex{}
-
-// Sockets returns a list of the current sockets
-func Sockets() []*Socket {
-	result := make([]*Socket, 0)
-	socketsMutex.Lock()
-	defer socketsMutex.Unlock()
-	for s := range sockets {
-		result = append(result, s)
-	}
-	return result
-}
+var Sockets = internal.NewConcurrentDictionary[Socket]()
 
 // Socket links a ws connection to a user id and handles safe reading and writing of data
 type Socket struct {
+	UID    string
 	conn   *websocket.Conn
 	User   db.User
 	hub    Hub
@@ -42,10 +34,28 @@ type Socket struct {
 	lost   bool
 }
 
+// Finds by **user** uid
+func FindByUserUID(uid string) (*Socket, bool) {
+	for _, s := range Sockets.Iter() {
+		if s.User.UID == uid {
+			return s, true
+		}
+	}
+
+	return nil, false
+}
+
 // NewSocket creates and returns a new Socket instance
 func NewSocket(c *websocket.Conn, hub Hub) *Socket {
 
+	id, err := shortid.Generate()
+
+	if err != nil {
+		id = uuid.New().String()
+	}
+
 	s := &Socket{
+		UID:    id,
 		conn:   c,
 		hub:    hub,
 		ready:  false,
@@ -54,9 +64,7 @@ func NewSocket(c *websocket.Conn, hub Hub) *Socket {
 		lost:   false,
 	}
 
-	socketsMutex.Lock()
-	sockets[s] = hub
-	socketsMutex.Unlock()
+	Sockets.Add(id, s)
 
 	logrus.Debugf("Opened a connection")
 
@@ -106,7 +114,7 @@ func (s *Socket) Listen() {
 
 		}
 
-		go s.hub.Parse(s, message)
+		s.hub.Parse(s, message)
 
 	}
 
@@ -171,12 +179,7 @@ func (s *Socket) Send(v interface{}) {
 // Close closes the client connection
 func (s *Socket) Close() {
 
-	defer func() {
-		if r := recover(); r != nil {
-			logrus.Warnf("Recovered from socket close. %v", r)
-			return
-		}
-	}()
+	defer internal.Recover()
 
 	if s.closed {
 		return
@@ -184,11 +187,7 @@ func (s *Socket) Close() {
 
 	s.closed = true
 
-	socketsMutex.Lock()
-
-	delete(sockets, s)
-
-	socketsMutex.Unlock()
+	Sockets.Remove(s.UID)
 
 	s.hub.OnSocketClose(s)
 
@@ -200,20 +199,21 @@ func (s *Socket) Close() {
 
 }
 
+func (s *Socket) IsClosed() bool {
+	return s.closed
+}
+
 // GetUserList returns a list of users currently online
 func GetUserList() UserListMessage {
 
 	usersMap := make(map[string]UserMessage)
 
-	socketsMutex.Lock()
-	defer socketsMutex.Unlock()
-
-	for s, h := range sockets {
+	for _, s := range Sockets.Iter() {
 
 		userEntry := UserMessage{
 			Username:    s.User.Username,
 			Color:       s.User.Color,
-			Hub:         h.Name(),
+			Hub:         s.hub.Name(),
 			Permissions: s.User.Permissions,
 		}
 

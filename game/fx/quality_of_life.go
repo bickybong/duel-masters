@@ -285,6 +285,18 @@ func Attacking(card *match.Card, ctx *match.Context) bool {
 
 }
 
+// AttackConfirmed returns true if the card is attacking and it cannot be cancelled
+func AttackConfirmed(card *match.Card, ctx *match.Context) bool {
+
+	if event, ok := ctx.Event.(*match.AttackConfirmed); ok {
+		if event.CardID == card.ID {
+			return true
+		}
+	}
+
+	return false
+}
+
 // AttackingPlayer returns true if the card is attacking a player
 func AttackingPlayer(card *match.Card, ctx *match.Context) bool {
 
@@ -322,4 +334,30 @@ func Destroyed(card *match.Card, ctx *match.Context) bool {
 
 	return false
 
+}
+
+// EndOfTurn returns true if the turn is ending, pre end of turn triggers
+func EndOfTurn(card *match.Card, ctx *match.Context) bool {
+	_, ok := ctx.Event.(*match.EndStep)
+
+	if !ok {
+		return false
+	}
+
+	return ok
+}
+
+// EndOfTurn returns true if the turn is ending, pre end of turn triggers
+func EndOfMyTurn(card *match.Card, ctx *match.Context) bool {
+	_, ok := ctx.Event.(*match.EndStep)
+
+	if !ok {
+		return false
+	}
+
+	if ctx.Match.IsPlayerTurn(card.Player) {
+		return true
+	}
+
+	return false
 }
